@@ -1,48 +1,51 @@
-// Supabase config
 const supabaseUrl = 'https://zlofztoiidpsjsrwmotz.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpsb2Z6dG9paWRwc2pzcndtb3R6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIzOTQ4MzgsImV4cCI6MjA1Nzk3MDgzOH0.r5dA9GNPcvg-5IY7frK1gTPZV07uUDEeBkpOzIq5XqQ'; // Your key
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpsb2Z6dG9paWRwc2pzcndtb3R6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIzOTQ4MzgsImV4cCI6MjA1Nzk3MDgzOH0.r5dA9GNPcvg-5IY7frK1gTPZV07uUDEeBkpOzIq5XqQ'; // Your key here
 const client = supabase.createClient(supabaseUrl, supabaseKey);
 
-// DOM elements
 const game_id = 'd9bbb999-3b52-47bb-b4a0-bc8e6b5ca95c';
 const cells = document.querySelectorAll('.cell');
 const statusText = document.getElementById('status');
 const restartBtn = document.getElementById('restart-btn');
 
-// Game state
 let player = null;
 let board = Array(9).fill('');
 let currentPlayer = 'X';
 let isMyTurn = false;
 
-// Assign player automatically
 async function assignPlayer() {
-    const { data } = await client
-        .from('games')
-        .select('*')
-        .eq('id', game_id)
-        .single();
+    try {
+        const { data, error } = await client
+            .from('games')
+            .select('*')
+            .eq('id', game_id)
+            .single();
 
-    if (!data.player_x_online) {
-        player = 'X';
-        isMyTurn = true;
-        await client
-            .from('games')
-            .update({ player_x_online: true })
-            .eq('id', game_id);
-    } else if (!data.player_o_online) {
-        player = 'O';
-        isMyTurn = false;
-        await client
-            .from('games')
-            .update({ player_o_online: true })
-            .eq('id', game_id);
-    } else {
-        alert('Both players already connected!');
+        if (error) throw error;
+
+        if (!data.player_x_online) {
+            player = 'X';
+            isMyTurn = true;
+            await client
+                .from('games')
+                .update({ player_x_online: true })
+                .eq('id', game_id);
+            console.log('Assigned as Player X');
+        } else if (!data.player_o_online) {
+            player = 'O';
+            isMyTurn = false;
+            await client
+                .from('games')
+                .update({ player_o_online: true })
+                .eq('id', game_id);
+            console.log('Assigned as Player O');
+        } else {
+            alert('Both players already connected!');
+        }
+    } catch (err) {
+        console.error('Error assigning player:', err);
     }
 }
 
-// UI updater
 function updateUI(data) {
     board.forEach((val, i) => {
         cells[i].textContent = val || '';
@@ -63,7 +66,6 @@ function updateUI(data) {
     isMyTurn = currentPlayer === player;
 }
 
-// Handle cell clicks
 cells.forEach(cell => cell.addEventListener('click', async (e) => {
     const index = e.target.dataset.index;
 
@@ -74,17 +76,21 @@ cells.forEach(cell => cell.addEventListener('click', async (e) => {
     isMyTurn = false;
 
     updateUI({
-        player_x_online: player === 'X' ? true : onlineFlags.player_x_online,
-        player_o_online: player === 'O' ? true : onlineFlags.player_o_online
+        player_x_online: onlineFlags.player_x_online,
+        player_o_online: onlineFlags.player_o_online
     });
 
-    await client
-        .from('games')
-        .update({ board, turn: currentPlayer })
-        .eq('id', game_id);
+    try {
+        const { error } = await client
+            .from('games')
+            .update({ board, turn: currentPlayer })
+            .eq('id', game_id);
+        if (error) throw error;
+    } catch (err) {
+        console.error('Error updating move:', err);
+    }
 }));
 
-// Listen to Supabase realtime changes
 client
     .channel('public:games')
     .on(
@@ -97,18 +103,28 @@ client
             updateUI(data);
         }
     )
-    .subscribe();
+    .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            console.log('Realtime subscription active!');
+        } else {
+            console.error('Subscription issue:', status);
+        }
+    });
 
-// Restart button clears board on Supabase & locally
 restartBtn.addEventListener('click', async () => {
     board = Array(9).fill('');
     currentPlayer = 'X';
     isMyTurn = player === 'X';
 
-    await client
-        .from('games')
-        .update({ board, turn: 'X' })
-        .eq('id', game_id);
+    try {
+        const { error } = await client
+            .from('games')
+            .update({ board, turn: 'X' })
+            .eq('id', game_id);
+        if (error) throw error;
+    } catch (err) {
+        console.error('Error restarting game:', err);
+    }
 
     updateUI({
         player_x_online: onlineFlags.player_x_online,
@@ -116,32 +132,40 @@ restartBtn.addEventListener('click', async () => {
     });
 });
 
-// Disconnect handling
 window.addEventListener('beforeunload', async () => {
     const field = player === 'X' ? 'player_x_online' : 'player_o_online';
-    await client
-        .from('games')
-        .update({ [field]: false })
-        .eq('id', game_id);
+    try {
+        await client
+            .from('games')
+            .update({ [field]: false })
+            .eq('id', game_id);
+    } catch (err) {
+        console.warn('Error marking offline:', err);
+    }
 });
 
-// Initial load
 let onlineFlags = { player_x_online: false, player_o_online: false };
 
 (async function init() {
-    await assignPlayer();
+    try {
+        await assignPlayer();
 
-    const { data } = await client
-        .from('games')
-        .select('*')
-        .eq('id', game_id)
-        .single();
+        const { data, error } = await client
+            .from('games')
+            .select('*')
+            .eq('id', game_id)
+            .single();
 
-    board = data.board;
-    currentPlayer = data.turn;
-    onlineFlags = {
-        player_x_online: data.player_x_online,
-        player_o_online: data.player_o_online
-    };
-    updateUI(data);
+        if (error) throw error;
+
+        board = data.board;
+        currentPlayer = data.turn;
+        onlineFlags = {
+            player_x_online: data.player_x_online,
+            player_o_online: data.player_o_online
+        };
+        updateUI(data);
+    } catch (err) {
+        console.error('Error during initialization:', err);
+    }
 })();
