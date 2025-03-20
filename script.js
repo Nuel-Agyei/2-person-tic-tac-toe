@@ -1,144 +1,138 @@
-// import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
-
 const supabaseUrl = 'https://zlofztoiidpsjsrwmotz.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpsb2Z6dG9paWRwc2pzcndtb3R6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIzOTQ4MzgsImV4cCI6MjA1Nzk3MDgzOH0.r5dA9GNPcvg-5IY7frK1gTPZV07uUDEeBkpOzIq5XqQ';
 const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
 
-const gameId = 'd9bbb999-3b52-47bb-b4a0-bc8e6b5ca95c';
+const game_id = 'd9bbb999-3b52-47bb-b4a0-bc8e6b5ca95c';
 const cells = document.querySelectorAll('.cell');
 const statusText = document.getElementById('status');
 const restartBtn = document.getElementById('restart-btn');
 
-let playerRole = null; // 'player_1' or 'player_2'
-let symbol = ''; // Custom symbol/emoji
+// Ask player for a name or symbol (defaults to first letter of name or emoji)
+let name = prompt("Enter your name or symbol (e.g. 😎 or 'Player'):");
+let playerSymbol = name ? name.trim()[0] : '❓'; // fallback symbol
+playerSymbol = playerSymbol || '❓';
+
 let board = Array(9).fill('');
-let turn = '';
-let gameData = null;
+let currentTurn = null; // whose turn is it (e.g. 'X', 'O', or an emoji)
 
-// 🟢 STEP 1: Connect player
-async function connectPlayer() {
-    const input = prompt("Enter your name or custom symbol (letter/emoji):");
-    symbol = input ? input[0] : '❓';
-
-    // Fetch game state
-    const { data, error } = await supabase
+// Initialize Supabase sync
+async function init() {
+    // Register yourself (we'll set player_1 or player_2 depending on who joins first)
+    const { data: gameData, error } = await supabase
         .from('games')
         .select('*')
-        .eq('id', gameId)
+        .eq('id', game_id)
         .single();
 
-    if (error) return console.error('Fetch game error:', error);
-
-    gameData = data;
-
-    if (!data.player_1_symbol) {
-        playerRole = 'player_1';
-        await supabase.from('games').update({
-            player_1_symbol: symbol,
-            player_1_online: true
-        }).eq('id', gameId);
-    } else if (!data.player_2_symbol) {
-        playerRole = 'player_2';
-        await supabase.from('games').update({
-            player_2_symbol: symbol,
-            player_2_online: true
-        }).eq('id', gameId);
-    } else {
-        alert("Game full!");
+    if (error) {
+        console.error('Error loading game state:', error);
         return;
     }
 
-    listenToGame();
-    updateUI();
-}
-
-// 🟢 STEP 2: Listen to game changes
-function listenToGame() {
-    supabase.channel('public:games')
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games' }, payload => {
-            gameData = payload.new;
-            board = gameData.board;
-            turn = gameData.turn;
-            updateUI();
-        })
-        .subscribe();
-
-    initialSync();
-}
-
-// 🟢 STEP 3: Initial sync & randomize turn
-async function initialSync() {
-    const { data } = await supabase
-        .from('games')
-        .select('*')
-        .eq('id', gameId)
-        .single();
-
-    gameData = data;
-    board = data.board;
-    turn = data.turn;
-
-    // If both online and turn not yet set
-    if (data.player_1_online && data.player_2_online && !data.turn) {
-        const randomTurn = Math.random() < 0.5 ? data.player_1_symbol : data.player_2_symbol;
-        await supabase.from('games').update({ turn: randomTurn }).eq('id', gameId);
+    // If no players yet, you're player_1
+    let updates = {};
+    if (!gameData.player_1_symbol) {
+        updates.player_1_symbol = playerSymbol;
+        updates.player_1_online = true;
+        currentTurn = playerSymbol;
+    } else if (!gameData.player_2_symbol) {
+        updates.player_2_symbol = playerSymbol;
+        updates.player_2_online = true;
+        currentTurn = gameData.turn || gameData.player_1_symbol;
+    } else {
+        alert('Game is full!');
+        return;
     }
 
-    updateUI();
+    if (!gameData.turn) {
+        updates.turn = currentTurn;
+    }
+
+    await supabase
+        .from('games')
+        .update(updates)
+        .eq('id', game_id);
+
+    // Subscribe to game updates
+    supabase
+        .channel('public:games')
+        .on(
+            'postgres_changes',
+            { event: 'UPDATE', schema: 'public', table: 'games' },
+            payload => {
+                const data = payload.new;
+                board = data.board;
+                currentTurn = data.turn;
+                updateUI(data);
+            }
+        )
+        .subscribe();
+
+    // Load game board
+    board = gameData.board || Array(9).fill('');
+    currentTurn = gameData.turn || currentTurn;
+    updateUI(gameData);
 }
 
-// 🟢 STEP 4: Handle clicks
-cells.forEach(cell => cell.addEventListener('click', async (e) => {
-    const index = e.target.dataset.index;
-
-    if (board[index] !== '' || symbol !== turn) return;
-
-    board[index] = symbol;
-    const nextTurn = symbol === gameData.player_1_symbol ? gameData.player_2_symbol : gameData.player_1_symbol;
-
-    await supabase.from('games').update({
-        board,
-        turn: nextTurn
-    }).eq('id', gameId);
-}));
-
-// 🟢 STEP 5: UI Updates
-function updateUI() {
-    cells.forEach((cell, i) => {
-        cell.textContent = board[i] || '';
+// Update UI
+function updateUI(data) {
+    cells.forEach((cell, index) => {
+        cell.textContent = board[index] || '';
     });
 
-    const p1Status = gameData.player_1_online ? '🟢' : '🔴';
-    const p2Status = gameData.player_2_online ? '🟢' : '🔴';
+    const p1 = data.player_1_symbol || 'Waiting';
+    const p2 = data.player_2_symbol || 'Waiting';
+    const p1Online = data.player_1_online ? '🟢' : '🔴';
+    const p2Online = data.player_2_online ? '🟢' : '🔴';
+
     statusText.innerHTML = `
-        Player 1 (${gameData.player_1_symbol || '?'}) ${p1Status} | 
-        Player 2 (${gameData.player_2_symbol || '?'}) ${p2Status} <br>
-        ${turn ? `${turn}'s turn` : 'Waiting for both players...'}
+        ${p1} ${p1Online} vs ${p2} ${p2Online} <br>
+        ${currentTurn}'s Turn
     `;
 }
 
-// 🟢 STEP 6: Handle leave event
-window.addEventListener('beforeunload', async () => {
-    if (playerRole) {
-        await supabase.from('games').update({
-            [`${playerRole}_online`]: false
-        }).eq('id', gameId);
+// Handle clicks
+cells.forEach(cell => cell.addEventListener('click', async (e) => {
+    const index = e.target.dataset.index;
+
+    if (board[index] !== '') return; // Cell already taken
+    if (currentTurn !== playerSymbol) {
+        alert("Not your turn!");
+        return;
     }
-});
 
-// 🟢 STEP 7: Reset button
+    board[index] = playerSymbol;
+    const nextTurn = playerSymbol === board.find(sym => sym === playerSymbol) ? getOpponentSymbol() : getOpponentSymbol();
+
+    await supabase
+        .from('games')
+        .update({ board, turn: nextTurn })
+        .eq('id', game_id);
+}));
+
+// Get the other player’s symbol
+function getOpponentSymbol() {
+    const symbols = board.filter(sym => sym !== '' && sym !== playerSymbol);
+    return symbols[0] || playerSymbol; // fallback if only one player
+}
+
+// Restart button resets the board
 restartBtn.addEventListener('click', async () => {
-    await supabase.from('games').update({
-        board: Array(9).fill(''),
-        turn: null,
-        player_1_symbol: null,
-        player_2_symbol: null,
-        player_1_online: false,
-        player_2_online: false
-    }).eq('id', gameId);
-
-    window.location.reload();
+    board = Array(9).fill('');
+    await supabase
+        .from('games')
+        .update({ board })
+        .eq('id', game_id);
 });
 
-// Start game
-connectPlayer();
+// Mark offline when closing tab
+window.addEventListener('beforeunload', async () => {
+    const column = playerSymbol === name[0] ? 'player_1_online' : 'player_2_online';
+    await supabase
+        .from('games')
+        .update({ [column]: false })
+        .eq('id', game_id);
+});
+
+// Start!
+init();
